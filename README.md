@@ -134,7 +134,7 @@ Panels: **Browse** (article tree + wiki link navigation) | **Query** (LLM Q&A) |
 
 ![alt text](ad066033fd3ee62f043c03c77fa1d5de.png)
 ![alt text](8ce4d6ff694d83f2fe35625f93e208e7.png)
-![alt text](74bc477c3c0e2201a0ccfc13795a9389-1.png)
+![alt text](74bc477c3c0e2201a0ccfc13795a9389.png)
 ---
 
 ## Directory Structure
