@@ -4,6 +4,7 @@
 
 LLM Wiki 将大型语言模型作为**知识编译器**：原始文档输入，结构化且交叉引用的 Markdown Wiki 文章输出。不需要向量数据库，不需要 Embedding — 只需文件、LLM 和 Obsidian。
 
+https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f 
 ---
 
 ## 为什么选择 LLM Wiki？
@@ -130,6 +131,9 @@ python3 scripts/app.py
 
 面板：**浏览**（文章树 + Wiki 链接导航）| **查询**（LLM 问答）| **编译**（SSE 实时进度）| **健康**（一键检查 + 自动修复）| **关于**（配置信息）
 
+![alt text](ad066033fd3ee62f043c03c77fa1d5de.png)
+![alt text](8ce4d6ff694d83f2fe35625f93e208e7.png)
+![alt text](74bc477c3c0e2201a0ccfc13795a9389.png)
 ---
 
 ## 目录结构
