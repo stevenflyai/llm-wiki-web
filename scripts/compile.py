@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-__version__ = "0.1"
+__version__ = "0.2"
+__release_date__ = "2026-04-11"
 __author__ = "Steven Lian"
 """
 LLM Wiki 编译脚本 (compile.py)
@@ -318,20 +319,26 @@ def save_state(state: dict):
         json.dump(state, f, indent=2, ensure_ascii=False)
 
 
-def needs_compile(raw_file: Path, processed: dict) -> bool:
+def needs_compile(raw_file: Path, processed: dict, failed: Optional[dict] = None) -> bool:
     """
     判断文件是否需要编译：
-    - 从未处理过  → True
+    - 从未处理过且未失败过 → True
     - 内容已变化（哈希不同）→ True
-    - 已处理且未变化 → False
+    - 之前失败但内容未变   → False（避免重复失败）
+    - 已处理且未变化       → False
     """
     key = str(raw_file)
-    if key not in processed:
-        return True
-    stored_hash = processed[key]
-    if not stored_hash:          # 旧版兼容：无哈希值，强制重新编译一次
-        return True
-    return file_hash(raw_file) != stored_hash
+    if key in processed:
+        stored_hash = processed[key]
+        if not stored_hash:      # 旧版兼容：无哈希值，强制重新编译一次
+            return True
+        return file_hash(raw_file) != stored_hash
+    if failed and key in failed:
+        # 之前失败过：仅在文件内容变化时重试
+        stored_hash = failed[key].get("hash", "")
+        if stored_hash and file_hash(raw_file) == stored_hash:
+            return False
+    return True
 
 
 # ── Wiki 操作 ─────────────────────────────────────────────────────────────
@@ -434,8 +441,10 @@ Wiki 文章格式要求：
 def compile_file(raw_file: Path, client, client_type: str, model: str,
                  existing_wiki: list[str], dry_run: bool = False,
                  pdf_backend: Optional[str] = None,
-                 pdf_cache: Optional[dict] = None) -> Optional[Path]:
-    """编译单个原始文件（.md / .txt / .pdf / .pptx / .docx 等）为 wiki 文章"""
+                 pdf_cache: Optional[dict] = None) -> tuple[Optional[Path], Optional[str]]:
+    """编译单个原始文件（.md / .txt / .pdf / .pptx / .docx 等）为 wiki 文章。
+    返回 (output_path, error_reason)：成功时 error_reason 为 None，失败时 output_path 为 None。
+    """
     suffix = raw_file.suffix.lower()
     console.print(f"[bold blue]编译：[/bold blue]{raw_file.name}  [dim]({suffix})[/dim]")
 
@@ -450,24 +459,28 @@ def compile_file(raw_file: Path, client, client_type: str, model: str,
             try:
                 content, pdf_meta = pdf_to_markdown(raw_file, backend=pdf_backend)
             except RuntimeError as e:
-                console.print(f"  [red]PDF 提取失败：{e}[/red]")
-                return None
+                msg = f"PDF 提取失败：{e}"
+                console.print(f"  [red]{msg}[/red]")
+                return None, msg
     elif suffix in OFFICE_EXTENSIONS:
         try:
             content, pdf_meta = extract_office_text(raw_file)
         except RuntimeError as e:
-            console.print(f"  [red]Office 文档提取失败：{e}[/red]")
-            return None
+            msg = f"Office 文档提取失败：{e}"
+            console.print(f"  [red]{msg}[/red]")
+            return None, msg
     else:
         try:
             content = raw_file.read_text(encoding="utf-8")
         except Exception as e:
-            console.print(f"  [red]读取失败：{e}[/red]")
-            return None
+            msg = f"读取失败：{e}"
+            console.print(f"  [red]{msg}[/red]")
+            return None, msg
 
     if len(content.strip()) < 50:
-        console.print(f"  [yellow]内容太短，跳过[/yellow]")
-        return None
+        msg = "内容太短，跳过"
+        console.print(f"  [yellow]{msg}[/yellow]")
+        return None, msg
 
     # 确定目标类别
     category_prompt = f"""
@@ -489,7 +502,7 @@ def compile_file(raw_file: Path, client, client_type: str, model: str,
                             category_prompt).strip().lower()
     except Exception as e:
         _handle_llm_error(e)
-        return None
+        return None, f"LLM 分类调用失败：{e}"
 
     if category not in ["concepts", "tools", "research", "tutorials"]:
         category = "concepts"
@@ -526,11 +539,12 @@ def compile_file(raw_file: Path, client, client_type: str, model: str,
         wiki_content = call_llm(client, client_type, model, COMPILE_SYSTEM_PROMPT, user_prompt)
     except Exception as e:
         _handle_llm_error(e)
-        return None
+        return None, f"LLM 编译调用失败：{e}"
 
     if not wiki_content:
-        console.print(f"  [red]LLM 返回空内容[/red]")
-        return None
+        msg = "LLM 返回空内容"
+        console.print(f"  [red]{msg}[/red]")
+        return None, msg
 
     # 提取文章标题
     title_match = re.search(r'^# (.+)$', wiki_content, re.MULTILINE)
@@ -545,7 +559,7 @@ def compile_file(raw_file: Path, client, client_type: str, model: str,
     if dry_run:
         console.print(f"  [yellow][DRY-RUN] 将写入：{output_file.relative_to(WIKI_ROOT)}[/yellow]")
         console.print(f"  内容预览：{wiki_content[:200]}...")
-        return output_file
+        return output_file, None
 
     # 写入文件
     output_file.write_text(wiki_content, encoding="utf-8")
@@ -555,7 +569,7 @@ def compile_file(raw_file: Path, client, client_type: str, model: str,
     summary = wiki_content.split('\n\n')[2][:100] if len(wiki_content.split('\n\n')) > 2 else title
     update_index(output_file, summary)
 
-    return output_file
+    return output_file, None
 
 
 # ── 并行 PDF 预提取 ────────────────────────────────────────────────────────
@@ -681,8 +695,9 @@ def main():
     elif args.all:
         files_to_compile = collect_raw_files()
     else:
-        # 增量模式：只处理「新增」或「内容已变化」的文件
-        files_to_compile = [f for f in collect_raw_files() if needs_compile(f, processed)]
+        # 增量模式：只处理「新增」或「内容已变化」的文件（跳过已失败且未修改的）
+        existing_failed = state.get("failed_files", {})
+        files_to_compile = [f for f in collect_raw_files() if needs_compile(f, processed, existing_failed)]
 
     # 无 PDF 引擎时过滤 PDF
     if not effective_backend:
@@ -723,11 +738,13 @@ def main():
     compiled_count = 0
     failed_count   = 0
 
+    failed_files: dict = state.get("failed_files", {})
+
     for i, raw_file in enumerate(files_to_compile, 1):
         status = "新增" if str(raw_file) not in processed else "已修改"
         console.print(f"[{i}/{len(files_to_compile)}] [{status}] ", end="")
 
-        result = compile_file(
+        result, error = compile_file(
             raw_file, client, client_type, model, existing_wiki,
             dry_run=False,
             pdf_backend=effective_backend,
@@ -735,24 +752,33 @@ def main():
         )
 
         if result:
-            # 编译成功：记录文件哈希
+            # 编译成功：记录文件哈希，清除失败记录
             processed[str(raw_file)] = file_hash(raw_file)
+            failed_files.pop(str(raw_file), None)
             compiled_count += 1
             existing_wiki.append(result.stem)
             # 每成功 3 篇就持久化一次状态（防止中途中断丢失进度）
             if compiled_count % 3 == 0:
                 state["processed_files"] = processed
+                state["failed_files"] = failed_files
                 save_state(state)
         else:
             failed_count += 1
+            failed_files[str(raw_file)] = {
+                "error": error or "Unknown error",
+                "hash": file_hash(raw_file),
+                "timestamp": datetime.now().isoformat(),
+            }
 
     # ── 最终持久化状态 ────────────────────────────────────────────────────
-    if compiled_count > 0:
-        state["processed_files"]    = processed
+    state["processed_files"] = processed
+    state["failed_files"] = failed_files
+    if compiled_count > 0 or failed_count > 0:
         state["last_compile"]       = datetime.now().isoformat()
         state["total_raw_files"]    = len(collect_raw_files())
         state["total_wiki_articles"] = len(get_wiki_articles())
-        save_state(state)
+    save_state(state)
+    if compiled_count > 0:
         append_log(f"编译 {compiled_count} 篇文章（PDF {len(pdf_list)} 篇，失败 {failed_count} 篇）")
 
     # ── 汇总输出 ──────────────────────────────────────────────────────────

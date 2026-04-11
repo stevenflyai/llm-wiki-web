@@ -418,6 +418,7 @@ body {
 }
 .file-item .status-dot.new { background: var(--success); }
 .file-item .status-dot.modified { background: var(--warning); }
+.file-item .status-dot.failed { background: var(--error); }
 .file-item .status-dot.compiled { background: var(--text-muted); }
 
 .file-item .file-name { flex: 1; font-family: var(--font-mono); font-size: 12px; }
@@ -429,6 +430,7 @@ body {
 }
 .file-item .file-status.new { background: rgba(0,232,143,0.15); color: var(--success); }
 .file-item .file-status.modified { background: rgba(255,176,32,0.15); color: var(--warning); }
+.file-item .file-status.failed { background: rgba(255,69,58,0.15); color: var(--error); }
 .file-item .file-status.compiled { background: var(--bg-tertiary); color: var(--text-muted); }
 
 .compile-log {
@@ -706,7 +708,12 @@ body {
           <div class="health-check-item">
             <span class="check-icon">&#x1F3F7;&#xFE0F;</span>
             <span class="check-name">Version</span>
-            <span class="check-count info" id="about-version">V0.1</span>
+            <span class="check-count info" id="about-version">V0.2</span>
+          </div>
+          <div class="health-check-item">
+            <span class="check-icon">&#x1F4C5;</span>
+            <span class="check-name">Release Date</span>
+            <span class="check-count info" id="about-release-date">2026-04-11</span>
           </div>
           <div class="health-check-item">
             <span class="check-icon">&#x1F464;</span>
@@ -775,6 +782,7 @@ async function loadConfig() {
       `${d.provider} / ${d.model}`;
     // Populate About panel
     if (d.version) document.getElementById('about-version').textContent = 'V' + d.version;
+    if (d.release_date) document.getElementById('about-release-date').textContent = d.release_date;
     if (d.provider) document.getElementById('about-provider').textContent = d.provider;
     if (d.model) document.getElementById('about-model').textContent = d.model;
   } catch (e) {
@@ -957,16 +965,22 @@ async function loadRawFiles() {
     const compiled = d.files.filter(f => f.status === 'compiled').length;
     const pending = d.files.filter(f => f.status === 'new').length;
     const modified = d.files.filter(f => f.status === 'modified').length;
+    const failedCount = d.files.filter(f => f.status === 'failed').length;
     const needsCompile = pending + modified;
-    const allGood = needsCompile === 0;
-    const scoreClass = allGood ? 'good' : needsCompile <= 2 ? 'warn' : 'bad';
+    const allGood = needsCompile === 0 && failedCount === 0;
+    const scoreClass = allGood ? 'good' : (needsCompile + failedCount) <= 2 ? 'warn' : 'bad';
     const pct = d.total > 0 ? Math.round(compiled / d.total * 100) : 100;
+
+    const statusMsg = allGood ? 'All Compiled'
+      : failedCount > 0 && needsCompile === 0 ? `${failedCount} file(s) failed`
+      : needsCompile > 0 && failedCount > 0 ? `${needsCompile} pending, ${failedCount} failed`
+      : `${needsCompile} file(s) pending`;
 
     document.getElementById('compile-stats').innerHTML = `
       <div class="health-score">
         <div class="score-circle ${scoreClass}">${pct}%</div>
         <div>
-          <div style="font-size:18px;font-weight:700">${allGood ? 'All Compiled' : needsCompile + ' file(s) pending'}</div>
+          <div style="font-size:18px;font-weight:700">${statusMsg}</div>
           <div style="font-size:13px;color:var(--text-secondary)">${d.total} total files in raw/${d.last_compile ? ' &middot; Last compile: ' + d.last_compile.slice(0,16).replace('T',' ') : ''}</div>
         </div>
       </div>
@@ -974,6 +988,7 @@ async function loadRawFiles() {
         ${compileRow('Compiled', compiled, 'ok')}
         ${compileRow('New (pending)', pending, pending > 0 ? 'issue' : 'ok')}
         ${compileRow('Modified (needs recompile)', modified, modified > 0 ? 'issue' : 'ok')}
+        ${compileRow('Failed', failedCount, failedCount > 0 ? 'issue' : 'ok')}
       </div>`;
 
     let html = '';
@@ -981,7 +996,8 @@ async function loadRawFiles() {
       html = '<div style="padding:20px;text-align:center;color:var(--text-muted)">No files in raw/ directory</div>';
     } else {
       for (const f of d.files) {
-        html += `<div class="file-item">
+        const errorTip = f.status === 'failed' && f.error ? ` title="${escapeHtml(f.error)}"` : '';
+        html += `<div class="file-item"${errorTip}>
           <span class="status-dot ${f.status}"></span>
           <span class="file-name">${f.path}</span>
           <span class="file-status ${f.status}">${f.status}</span>
@@ -990,10 +1006,13 @@ async function loadRawFiles() {
     }
     document.getElementById('raw-file-list').innerHTML = html;
 
-    if (needsCompile === 0) {
-      document.getElementById('compile-btn').innerHTML = '<span>\u2713</span> All Up to Date';
+    const btn = document.getElementById('compile-btn');
+    if (needsCompile === 0 && failedCount === 0) {
+      btn.innerHTML = '<span>\u2713</span> All Up to Date';
+    } else if (needsCompile > 0) {
+      btn.innerHTML = `<span>\u26A1</span> Compile ${needsCompile} File(s)`;
     } else {
-      document.getElementById('compile-btn').innerHTML = `<span>\u26A1</span> Compile ${needsCompile} File(s)`;
+      btn.innerHTML = `<span>\u26A1</span> Retry ${failedCount} Failed File(s)`;
     }
   } catch (e) {
     document.getElementById('raw-file-list').innerHTML =
@@ -1025,6 +1044,8 @@ async function doCompile() {
   fill.style.width = '0%';
 
   try {
+    // Clear failed state first so failed files are retried
+    await fetch('/api/compile/retry', { method: 'POST' });
     const response = await fetch('/api/compile', { method: 'POST' });
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -1068,7 +1089,7 @@ async function doCompile() {
     log.innerHTML += `<div class="log-error">Error: ${e.message}</div>`;
   } finally {
     btn.disabled = false;
-    btn.innerHTML = '<span>\u26A1</span> Compile New Files';
+    // loadRawFiles (called above) sets the correct button text based on current state
   }
 }
 

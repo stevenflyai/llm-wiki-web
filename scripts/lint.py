@@ -13,7 +13,8 @@ LLM Wiki 健康检查脚本 (lint.py)
     pip install rich
 """
 
-__version__ = "0.1"
+__version__ = "0.2"
+__release_date__ = "2026-04-11"
 __author__ = "Steven Lian"
 
 import os

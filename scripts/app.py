@@ -29,6 +29,7 @@ from typing import Optional
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
 
 # ── Path setup ────────────────────────────────────────────────────────────────
 SCRIPTS_DIR = Path(__file__).parent
@@ -55,7 +56,8 @@ from lint import (
 )
 
 # ── App setup ─────────────────────────────────────────────────────────────────
-__version__ = "0.1"
+__version__ = "0.2"
+__release_date__ = "2026-04-11"
 __author__ = "Steven Lian"
 
 app = FastAPI(title="LLM Wiki", version=__version__, docs_url="/docs")
@@ -88,16 +90,23 @@ def _env_changed() -> bool:
     return False
 
 
+_LLM_ENV_PREFIXES = (
+    "ANTHROPIC_", "OPENAI_", "AZURE_OPENAI_", "CUSTOM_",
+    "OLLAMA_", "LLM_PROVIDER", "LLM_TIMEOUT",
+    "PDF_BACKEND", "PDF_WORKERS", "PDF_MAX_CHARS",
+)
+
+
 def get_llm():
     """Lazy-init LLM client. Auto-reloads if .env has changed."""
     global _llm_client, _llm_client_type, _llm_cfg
     if _llm_client is None or _env_changed():
-        # Clear env cache so config.py re-reads .env
-        for key in list(os.environ.keys()):
-            if key.startswith(("ANTHROPIC_", "OPENAI_", "AZURE_OPENAI_", "CUSTOM_",
-                               "OLLAMA_", "LLM_PROVIDER", "LLM_TIMEOUT",
-                               "PDF_BACKEND", "PDF_WORKERS", "PDF_MAX_CHARS")):
-                del os.environ[key]
+        # Snapshot LLM-related env vars, clear them, reload from .env, then
+        # restore any non-LLM vars that were accidentally caught.
+        saved = {k: v for k, v in os.environ.items()
+                 if k.startswith(_LLM_ENV_PREFIXES)}
+        for key in saved:
+            del os.environ[key]
         from config import _load_dotenv, _PROJECT_ROOT
         _load_dotenv(_PROJECT_ROOT / ".env")
         _llm_client, _llm_client_type, _llm_cfg = cfg_setup()
@@ -141,14 +150,20 @@ async def list_articles():
 @app.get("/api/articles/{category}/{name}")
 async def get_article(category: str, name: str):
     """Get a single wiki article content."""
-    # Try exact match first, then fuzzy
-    target = WIKI_DIR / category / f"{name}.md"
+    # Validate path stays within WIKI_DIR (prevent path traversal)
+    wiki_root = WIKI_DIR.resolve()
+    target = (WIKI_DIR / category / f"{name}.md").resolve()
+    if not str(target).startswith(str(wiki_root) + os.sep) and target != wiki_root:
+        return JSONResponse({"error": "Invalid path"}, status_code=400)
+
     if not target.exists():
-        # Search for partial match
-        for md_file in (WIKI_DIR / category).glob("*.md"):
-            if name.lower() in md_file.stem.lower():
-                target = md_file
-                break
+        # Search for partial match within the resolved category dir
+        cat_dir = (WIKI_DIR / category).resolve()
+        if str(cat_dir).startswith(str(wiki_root) + os.sep) and cat_dir.is_dir():
+            for md_file in cat_dir.glob("*.md"):
+                if name.lower() in md_file.stem.lower():
+                    target = md_file
+                    break
 
     if not target.exists():
         return JSONResponse({"error": f"Article not found: {category}/{name}"}, status_code=404)
@@ -169,27 +184,44 @@ async def list_raw_files():
     """List raw files with their compile status."""
     state = load_state()
     processed = state.get("processed_files", {})
+    failed = state.get("failed_files", {})
 
     files = []
     for ext in SUPPORTED_EXTENSIONS:
         for f in RAW_DIR.rglob(f"*{ext}"):
             key = str(f)
-            status = "compiled" if key in processed else "new"
-            if key in processed and needs_compile(f, processed):
-                status = "modified"
-            files.append({
+            if key in processed:
+                status = "modified" if needs_compile(f, processed) else "compiled"
+            elif key in failed:
+                # Failed before: show "failed" unless file content changed (then "modified")
+                stored_hash = failed[key].get("hash", "")
+                if stored_hash and file_hash(f) != stored_hash:
+                    status = "modified"
+                else:
+                    status = "failed"
+            else:
+                status = "new"
+
+            entry = {
                 "name": f.name,
                 "path": str(f.relative_to(PROJECT_ROOT)),
                 "size": f.stat().st_size,
                 "status": status,
                 "category": f.parent.name,
-            })
+            }
+            if status == "failed":
+                entry["error"] = failed[key].get("error", "Unknown error")
+                entry["failed_at"] = failed[key].get("timestamp", "")
+            files.append(entry)
 
-    files.sort(key=lambda x: (x["status"] != "new", x["status"] != "modified", x["name"]))
+    # Sort: new first, then failed, then modified, then compiled
+    status_order = {"new": 0, "failed": 1, "modified": 2, "compiled": 3}
+    files.sort(key=lambda x: (status_order.get(x["status"], 9), x["name"]))
     return {
         "files": files,
         "total": len(files),
         "pending": sum(1 for f in files if f["status"] in ("new", "modified")),
+        "failed": sum(1 for f in files if f["status"] == "failed"),
         "last_compile": state.get("last_compile"),
     }
 
@@ -207,96 +239,128 @@ async def compile_wiki():
         global _compile_running, _compile_logs
         _compile_running = True
         _compile_logs = []
+        queue: asyncio.Queue = asyncio.Queue()
 
-        def log(msg: str):
-            _compile_logs.append(msg)
+        def _emit(data: dict):
+            """Thread-safe: put SSE message into the async queue."""
+            queue.put_nowait(data)
+
+        def _compile_worker():
+            """Run all blocking compile work in a thread."""
+            try:
+                _emit({'type': 'log', 'message': 'Initializing LLM client...'})
+                client, client_type, cfg = get_llm()
+
+                state = load_state()
+                processed = state.get("processed_files", {})
+                failed_files: dict = state.get("failed_files", {})
+                existing_wiki = [p.stem for p in get_wiki_articles()]
+
+                raw_files = []
+                for ext in SUPPORTED_EXTENSIONS:
+                    raw_files.extend(RAW_DIR.rglob(f"*{ext}"))
+                raw_files = sorted(raw_files)
+
+                files_to_compile = [f for f in raw_files if needs_compile(f, processed, failed_files)]
+
+                effective_backend = detect_pdf_backend()
+                if not effective_backend:
+                    files_to_compile = [f for f in files_to_compile if f.suffix.lower() != ".pdf"]
+
+                if not files_to_compile:
+                    _emit({'type': 'complete', 'message': 'No new files to compile. All files are up to date.', 'compiled': 0})
+                    return
+
+                total = len(files_to_compile)
+                _emit({'type': 'log', 'message': f'Found {total} file(s) to compile'})
+
+                pdf_list = [f for f in files_to_compile if f.suffix.lower() == ".pdf"]
+                pdf_cache = {}
+                if pdf_list:
+                    _emit({'type': 'log', 'message': f'Extracting text from {len(pdf_list)} PDF(s)...'})
+                    pdf_cache = prefetch_pdfs(pdf_list, effective_backend, cfg.pdf_workers)
+                    _emit({'type': 'log', 'message': 'PDF extraction complete'})
+
+                compiled = 0
+                failed = 0
+                for i, raw_file in enumerate(files_to_compile, 1):
+                    fname = raw_file.name
+                    _emit({'type': 'progress', 'current': i, 'total': total, 'file': fname, 'message': f'[{i}/{total}] Compiling {fname}...'})
+
+                    result, error = compile_file(
+                        raw_file, client, client_type, cfg, existing_wiki,
+                        dry_run=False,
+                        pdf_backend=effective_backend,
+                        pdf_cache=pdf_cache,
+                    )
+
+                    if result:
+                        processed[str(raw_file)] = file_hash(raw_file)
+                        failed_files.pop(str(raw_file), None)
+                        compiled += 1
+                        existing_wiki.append(result.stem)
+                        _emit({'type': 'log', 'message': f'  -> {result.stem}'})
+                    else:
+                        failed += 1
+                        failed_files[str(raw_file)] = {
+                            "error": error or "Unknown error",
+                            "hash": file_hash(raw_file),
+                            "timestamp": datetime.now().isoformat(),
+                        }
+                        _emit({'type': 'log', 'message': f'  -> Failed: {error or "Unknown error"}'})
+
+                state["processed_files"] = processed
+                state["failed_files"] = failed_files
+                if compiled > 0 or failed > 0:
+                    state["last_compile"] = datetime.now().isoformat()
+                    state["total_raw_files"] = len(raw_files)
+                    state["total_wiki_articles"] = len(get_wiki_articles())
+                save_state(state)
+                if compiled > 0:
+                    append_log(f"Web compile: {compiled} articles (failed: {failed})")
+
+                _emit({'type': 'complete', 'message': f'Done! Compiled {compiled} article(s), failed {failed}', 'compiled': compiled, 'failed': failed})
+
+            except Exception as e:
+                _emit({'type': 'error', 'message': str(e)})
+            finally:
+                _emit(None)  # sentinel to signal completion
+
+        # Start blocking work in a background thread
+        task = asyncio.get_event_loop().run_in_executor(None, _compile_worker)
 
         try:
-            log("Initializing LLM client...")
-            yield f"data: {json.dumps({'type': 'log', 'message': 'Initializing LLM client...'})}\n\n"
-
-            client, client_type, cfg = get_llm()
-
-            # Collect files to compile
-            state = load_state()
-            processed = state.get("processed_files", {})
-            existing_wiki = [p.stem for p in get_wiki_articles()]
-
-            raw_files = []
-            for ext in SUPPORTED_EXTENSIONS:
-                raw_files.extend(RAW_DIR.rglob(f"*{ext}"))
-            raw_files = sorted(raw_files)
-
-            files_to_compile = [f for f in raw_files if needs_compile(f, processed)]
-
-            # Filter PDFs if no backend
-            effective_backend = detect_pdf_backend()
-            if not effective_backend:
-                files_to_compile = [f for f in files_to_compile if f.suffix.lower() != ".pdf"]
-
-            if not files_to_compile:
-                yield f"data: {json.dumps({'type': 'complete', 'message': 'No new files to compile. All files are up to date.', 'compiled': 0})}\n\n"
-                return
-
-            total = len(files_to_compile)
-            yield f"data: {json.dumps({'type': 'log', 'message': f'Found {total} file(s) to compile'})}\n\n"
-
-            # Pre-extract PDFs
-            pdf_list = [f for f in files_to_compile if f.suffix.lower() == ".pdf"]
-            pdf_cache = {}
-            if pdf_list:
-                yield f"data: {json.dumps({'type': 'log', 'message': f'Extracting text from {len(pdf_list)} PDF(s)...'})}\n\n"
-                pdf_cache = prefetch_pdfs(pdf_list, effective_backend, cfg.pdf_workers)
-                yield f"data: {json.dumps({'type': 'log', 'message': 'PDF extraction complete'})}\n\n"
-
-            # Compile each file
-            compiled = 0
-            failed = 0
-            for i, raw_file in enumerate(files_to_compile, 1):
-                fname = raw_file.name
-                yield f"data: {json.dumps({'type': 'progress', 'current': i, 'total': total, 'file': fname, 'message': f'[{i}/{total}] Compiling {fname}...'})}\n\n"
-
-                result = compile_file(
-                    raw_file, client, client_type, cfg, existing_wiki,
-                    dry_run=False,
-                    pdf_backend=effective_backend,
-                    pdf_cache=pdf_cache,
-                )
-
-                if result:
-                    processed[str(raw_file)] = file_hash(raw_file)
-                    compiled += 1
-                    existing_wiki.append(result.stem)
-                    yield f"data: {json.dumps({'type': 'log', 'message': f'  -> {result.stem}'})}\n\n"
-                else:
-                    failed += 1
-                    yield f"data: {json.dumps({'type': 'log', 'message': f'  -> Failed to compile {fname}'})}\n\n"
-
-            # Save state
-            if compiled > 0:
-                state["processed_files"] = processed
-                state["last_compile"] = datetime.now().isoformat()
-                state["total_raw_files"] = len(raw_files)
-                state["total_wiki_articles"] = len(get_wiki_articles())
-                save_state(state)
-                append_log(f"Web compile: {compiled} articles (failed: {failed})")
-
-            yield f"data: {json.dumps({'type': 'complete', 'message': f'Done! Compiled {compiled} article(s), failed {failed}', 'compiled': compiled, 'failed': failed})}\n\n"
-
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            while True:
+                data = await queue.get()
+                if data is None:
+                    break
+                yield f"data: {json.dumps(data)}\n\n"
         finally:
             _compile_running = False
+            await task
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
+@app.post("/api/compile/retry")
+async def compile_retry():
+    """Clear failed state so files can be recompiled."""
+    state = load_state()
+    cleared = len(state.get("failed_files", {}))
+    state["failed_files"] = {}
+    save_state(state)
+    return {"cleared": cleared, "message": f"Cleared {cleared} failed file(s). Click Compile to retry."}
+
+
+class QueryRequest(BaseModel):
+    question: str = Field(..., min_length=1, max_length=2000)
+
+
 # ── API: Query ────────────────────────────────────────────────────────────────
 @app.post("/api/query")
-async def query_api(request: Request):
+async def query_api(body: QueryRequest):
     """Query the wiki knowledge base."""
-    body = await request.json()
-    question = body.get("question", "").strip()
+    question = body.question.strip()
     if not question:
         return JSONResponse({"error": "No question provided"}, status_code=400)
 
@@ -322,7 +386,7 @@ Please answer based on the above content."""
     # Save query result
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    safe_q = re.sub(r'[<>:"/\\|?*\s]', '_', question[:30])
+    safe_q = re.sub(r'[^a-zA-Z0-9\u4e00-\u9fff._-]', '_', question[:30]).strip('_')
     output_file = OUTPUT_DIR / f"{timestamp}_{safe_q}.md"
     output_file.write_text(
         f"# Query: {question}\n\n"
@@ -461,13 +525,14 @@ async def health_fix():
 async def get_config():
     """Get current LLM configuration."""
     _, _, cfg = get_llm()
-    key_hint = f"...{cfg.api_key[-6:]}" if len(cfg.api_key) > 6 else "(local)"
+    key_hint = f"...{cfg.api_key[-4:]}" if len(cfg.api_key) > 4 else "(local)"
     return {
         "provider": cfg.provider,
         "model": cfg.model,
         "base_url": cfg.base_url,
         "api_key_hint": key_hint,
         "version": __version__,
+        "release_date": __release_date__,
         "author": __author__,
     }
 
