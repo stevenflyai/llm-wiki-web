@@ -181,3 +181,7 @@ cython_debug/
 .cursorindexingignore
 .DS_Store
 llm-wiki-templates.zip
+# LLM Wiki project-specific
+vault/
+output/
+_meta/compile_state.json
