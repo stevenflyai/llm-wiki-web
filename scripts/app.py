@@ -22,12 +22,13 @@ import re
 import sys
 import threading
 import time
+from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
@@ -53,6 +54,7 @@ from query import query_wiki, find_relevant_articles, build_context, QUERY_SYSTE
 from lint import (
     load_all_articles, check_broken_links, check_orphan_articles,
     check_missing_metadata, check_knowledge_gaps, check_index_coverage,
+    check_content_gaps, extract_links,
 )
 
 # ── App setup ─────────────────────────────────────────────────────────────────
@@ -62,6 +64,8 @@ __author__ = "Steven Lian"
 
 app = FastAPI(title="LLM Wiki", version=__version__, docs_url="/docs")
 templates = Jinja2Templates(directory=str(SCRIPTS_DIR / "templates"))
+
+FAVICON_SVG = """<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\"><rect width=\"64\" height=\"64\" rx=\"12\" fill=\"#0a0e1a\"/><path d=\"M16 18h22a10 10 0 0 1 0 20H16z\" fill=\"#00d4ff\"/><path d=\"M18 42h30v6H18z\" fill=\"#a78bfa\"/><path d=\"M24 25h14a3 3 0 0 1 0 6H24z\" fill=\"#0a0e1a\"/></svg>"""
 
 # Global LLM client (lazy init, auto-refresh on .env change)
 _llm_client = None
@@ -116,7 +120,13 @@ def get_llm():
 # ── Pages ─────────────────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="index.html")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+@app.get("/favicon.svg", include_in_schema=False)
+async def favicon():
+    return Response(content=FAVICON_SVG, media_type="image/svg+xml")
 
 
 # ── API: Articles ─────────────────────────────────────────────────────────────
@@ -518,6 +528,74 @@ async def health_fix():
         "fixed": len(fixes),
         "details": fixes,
     }
+
+
+# ── API: Analytics ────────────────────────────────────────────────────────────
+@app.get("/api/analytics/density")
+async def analytics_density():
+    """Knowledge density: article count per category and topic."""
+    items = []
+    for md_file in WIKI_DIR.rglob("*.md"):
+        if md_file.name in ("INDEX.md", "LOG.md"):
+            continue
+        category = md_file.parent.name
+        if category == "wiki":
+            category = "other"
+        items.append({"category": category, "topic": md_file.stem, "count": 1})
+    cat_summary = dict(Counter(r["category"] for r in items))
+    return {"items": items, "category_summary": cat_summary}
+
+
+@app.get("/api/analytics/timeline")
+async def analytics_timeline():
+    """Compile history: article creation dates by category."""
+    raw_items = []
+    for md_file in WIKI_DIR.rglob("*.md"):
+        if md_file.name in ("INDEX.md", "LOG.md"):
+            continue
+        category = md_file.parent.name
+        if category == "wiki":
+            category = "other"
+        mtime = datetime.fromtimestamp(md_file.stat().st_mtime)
+        raw_items.append((mtime.strftime("%Y-%m-%d"), category))
+    agg = Counter(raw_items)
+    timeline = [{"date": k[0], "category": k[1], "count": v} for k, v in agg.items()]
+    timeline.sort(key=lambda x: x["date"])
+    return {"items": timeline}
+
+
+@app.get("/api/analytics/citations")
+async def analytics_citations():
+    """Citation network: in-degree and out-degree for each article."""
+    articles = load_all_articles()
+    out_links = {}
+    in_links = defaultdict(list)
+    for name, (path, content) in articles.items():
+        links = extract_links(content)
+        targets = list(set(link.split('|')[0].strip() for link in links))
+        out_links[name] = targets
+        for t in targets:
+            in_links[t].append(name)
+    results = []
+    for name in articles:
+        results.append({
+            "article": name,
+            "in_degree": len(in_links.get(name, [])),
+            "out_degree": len(out_links.get(name, [])),
+            "links": out_links.get(name, []),
+        })
+    results.sort(key=lambda x: x["in_degree"], reverse=True)
+    return {"items": results}
+
+
+@app.get("/api/health/gaps")
+async def health_gaps(min_articles: int = 3):
+    """Active knowledge gap prompts."""
+    articles = load_all_articles()
+    if not articles:
+        return {"items": [], "min_articles": min_articles}
+    gaps = check_content_gaps(articles, min_articles)
+    return {"items": gaps, "min_articles": min_articles}
 
 
 # ── API: Config info ──────────────────────────────────────────────────────────

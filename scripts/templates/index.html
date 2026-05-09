@@ -4,11 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>LLM Wiki</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- Markdown rendering -->
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <!-- Code highlighting -->
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
 <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+<!-- Charts -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
 /* ── Reset & Base ─────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -580,6 +583,81 @@ body {
   color: var(--text-secondary);
   margin-bottom: 20px;
 }
+
+/* ── Analytics Panel ─────────────────────────────────────── */
+.analytics-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px 24px;
+}
+.analytics-card h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 14px;
+  color: var(--text-primary);
+}
+
+.heatmap-grid {
+  display: grid;
+  gap: 3px;
+}
+.heatmap-cell {
+  border-radius: 3px;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  cursor: default;
+  transition: transform 0.1s;
+}
+.heatmap-cell:hover { transform: scale(1.05); z-index: 1; }
+.heatmap-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+}
+
+.citation-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.citation-table th {
+  text-align: left;
+  padding: 8px 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.citation-table td {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+}
+.citation-table tr:hover td { background: var(--accent-glow); }
+.degree-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 3px;
+  min-width: 28px;
+  text-align: center;
+}
+.degree-badge.high { background: rgba(0,212,255,0.2); color: var(--accent); }
+.degree-badge.med { background: rgba(255,176,32,0.15); color: var(--warning); }
+.degree-badge.zero { background: var(--bg-tertiary); color: var(--text-muted); }
 </style>
 </head>
 <body>
@@ -602,6 +680,9 @@ body {
     </div>
     <div class="nav-tab" data-panel="health">
       <span class="tab-icon">&#x1F3E5;</span> Health
+    </div>
+    <div class="nav-tab" data-panel="analytics">
+      <span class="tab-icon">&#x1F4CA;</span> Analytics
     </div>
     <div class="nav-tab" data-panel="about">
       <span class="tab-icon">&#x2139;&#xFE0F;</span> About
@@ -690,6 +771,28 @@ body {
           </button>
         </div>
         <div id="health-result"></div>
+      </div>
+    </div>
+
+    <!-- Analytics Panel -->
+    <div class="panel" id="panel-analytics">
+      <div class="section-title"><span class="icon">&#x1F4CA;</span> Analytics</div>
+      <p class="section-subtitle">Knowledge density heatmap, compile timeline, and citation network analysis.</p>
+      <div style="max-width:900px">
+        <div style="display:flex; gap:8px; margin-bottom:20px;">
+          <button class="btn btn-primary" id="analytics-btn" onclick="loadAnalytics()">
+            <span>&#x1F4CA;</span> Load Analytics
+          </button>
+        </div>
+
+        <!-- Density Heatmap -->
+        <div id="analytics-density"></div>
+
+        <!-- Timeline Chart -->
+        <div id="analytics-timeline" style="margin-top:24px"></div>
+
+        <!-- Citation Network -->
+        <div id="analytics-citations" style="margin-top:24px"></div>
       </div>
     </div>
 
@@ -1161,6 +1264,20 @@ async function doHealthCheck() {
 
     document.getElementById('health-result').innerHTML = html;
     fixBtn.style.display = hasIssues ? 'inline-flex' : 'none';
+
+    // Fetch knowledge gap suggestions
+    try {
+      const gapsR = await fetch('/api/health/gaps');
+      const gapsD = await gapsR.json();
+      if (gapsD.items && gapsD.items.length > 0) {
+        let gapsHtml = '<div class="health-details" style="margin-top:16px"><div class="health-detail-section"><h4 style="color:var(--accent)">Knowledge Gap Suggestions</h4>';
+        for (const gap of gapsD.items) {
+          gapsHtml += `<div class="health-detail-item" style="border-left-color:var(--warning)">${escapeHtml(gap.suggestion)}</div>`;
+        }
+        gapsHtml += '</div></div>';
+        document.getElementById('health-result').innerHTML += gapsHtml;
+      }
+    } catch (_) {}
   } catch (e) {
     document.getElementById('health-result').innerHTML =
       `<div style="color:var(--error)">Error: ${e.message}</div>`;
@@ -1203,6 +1320,190 @@ async function doHealthFix() {
     btn.disabled = false;
     btn.innerHTML = '<span>\u{1F527}</span> Auto Fix';
   }
+}
+
+// ── Analytics ────────────────────────────────────────────
+let timelineChart = null;
+
+async function loadAnalytics() {
+  const btn = document.getElementById('analytics-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Loading...';
+  try {
+    const [densityR, timelineR, citationsR] = await Promise.all([
+      fetch('/api/analytics/density').then(r => r.json()),
+      fetch('/api/analytics/timeline').then(r => r.json()),
+      fetch('/api/analytics/citations').then(r => r.json()),
+    ]);
+    renderHeatmap(densityR);
+    renderTimeline(timelineR);
+    renderCitations(citationsR);
+  } catch (e) {
+    document.getElementById('analytics-density').innerHTML =
+      `<div style="color:var(--error)">Error: ${e.message}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<span>\u{1F4CA}</span> Load Analytics';
+  }
+}
+
+function renderHeatmap(data) {
+  const cats = ['concepts', 'research', 'tools', 'tutorials'];
+  const catColors = {
+    concepts: '0, 212, 255',
+    research: '124, 58, 237',
+    tools: '0, 232, 143',
+    tutorials: '255, 176, 32',
+  };
+  const summary = data.category_summary || {};
+
+  // Build grouped view: categories as columns, articles as rows within each
+  let html = '<div class="analytics-card"><h3>Knowledge Density</h3>';
+  html += '<div style="display:grid;grid-template-columns:repeat(' + cats.length + ',1fr);gap:12px">';
+  for (const cat of cats) {
+    const articles = data.items.filter(i => i.category === cat);
+    const count = summary[cat] || 0;
+    const rgb = catColors[cat] || '100,100,100';
+    html += '<div>';
+    html += `<div style="text-align:center;margin-bottom:8px">`;
+    html += `<div style="font-size:24px;font-weight:700;font-family:var(--font-mono);color:rgba(${rgb},1)">${count}</div>`;
+    html += `<div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.05em">${cat}</div>`;
+    html += '</div>';
+    html += '<div style="display:flex;flex-direction:column;gap:3px">';
+    for (const a of articles) {
+      const opacity = 0.3 + Math.min(0.7, a.count * 0.2);
+      html += `<div class="heatmap-cell" style="background:rgba(${rgb},${opacity})" title="${a.topic}">${truncate(a.topic, 20)}</div>`;
+    }
+    if (articles.length === 0) {
+      html += '<div style="text-align:center;padding:12px;color:var(--text-muted);font-size:11px">empty</div>';
+    }
+    html += '</div></div>';
+  }
+  html += '</div></div>';
+  document.getElementById('analytics-density').innerHTML = html;
+}
+
+function renderTimeline(data) {
+  const items = data.items || [];
+  if (items.length === 0) {
+    document.getElementById('analytics-timeline').innerHTML =
+      '<div class="analytics-card"><h3>Compile Timeline</h3><div style="color:var(--text-muted);font-size:13px">No timeline data</div></div>';
+    return;
+  }
+
+  // Aggregate by date
+  const dates = [...new Set(items.map(i => i.date))].sort();
+  const cats = [...new Set(items.map(i => i.category))];
+  const catColors = {
+    concepts: 'rgba(0, 212, 255, 0.8)',
+    research: 'rgba(124, 58, 237, 0.8)',
+    tools: 'rgba(0, 232, 143, 0.8)',
+    tutorials: 'rgba(255, 176, 32, 0.8)',
+    other: 'rgba(90, 101, 128, 0.8)',
+  };
+
+  // Build datasets for stacked bar
+  const datasets = cats.map(cat => ({
+    label: cat,
+    data: dates.map(d => {
+      const match = items.find(i => i.date === d && i.category === cat);
+      return match ? match.count : 0;
+    }),
+    backgroundColor: catColors[cat] || 'rgba(100,100,100,0.8)',
+    stack: 'stack0',
+  }));
+
+  // Cumulative line
+  let cumulative = 0;
+  const cumData = dates.map(d => {
+    cumulative += items.filter(i => i.date === d).reduce((s, i) => s + i.count, 0);
+    return cumulative;
+  });
+  datasets.push({
+    label: 'Cumulative',
+    data: cumData,
+    type: 'line',
+    borderColor: 'rgba(255,255,255,0.8)',
+    borderWidth: 2,
+    pointRadius: 3,
+    pointBackgroundColor: '#fff',
+    fill: false,
+    yAxisID: 'y1',
+  });
+
+  let html = '<div class="analytics-card"><h3>Compile Timeline</h3>';
+  html += '<div style="position:relative;height:300px"><canvas id="timeline-canvas"></canvas></div></div>';
+  document.getElementById('analytics-timeline').innerHTML = html;
+
+  if (timelineChart) timelineChart.destroy();
+  const ctx = document.getElementById('timeline-canvas').getContext('2d');
+  timelineChart = new Chart(ctx, {
+    type: 'bar',
+    data: { labels: dates, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#8892a8', font: { size: 11 } } },
+      },
+      scales: {
+        x: { stacked: true, ticks: { color: '#5a6580', font: { size: 10 } }, grid: { color: 'rgba(30,42,74,0.5)' } },
+        y: { stacked: true, ticks: { color: '#5a6580' }, grid: { color: 'rgba(30,42,74,0.5)' }, title: { display: true, text: 'Articles', color: '#8892a8' } },
+        y1: { position: 'right', ticks: { color: '#5a6580' }, grid: { drawOnChartArea: false }, title: { display: true, text: 'Cumulative', color: '#8892a8' } },
+      },
+    },
+  });
+}
+
+function renderCitations(data) {
+  const items = data.items || [];
+  if (items.length === 0) {
+    document.getElementById('analytics-citations').innerHTML =
+      '<div class="analytics-card"><h3>Citation Network</h3><div style="color:var(--text-muted);font-size:13px">No articles found</div></div>';
+    return;
+  }
+
+  const topReferenced = items.slice(0, 10);
+  const orphans = items.filter(i => i.in_degree === 0 && i.out_degree === 0).slice(0, 10);
+
+  let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">';
+
+  // Top referenced
+  html += '<div class="analytics-card"><h3>Top Referenced (Core Concepts)</h3>';
+  html += '<table class="citation-table"><thead><tr><th>Article</th><th>In</th><th>Out</th></tr></thead><tbody>';
+  for (const item of topReferenced) {
+    const inClass = item.in_degree >= 5 ? 'high' : item.in_degree >= 2 ? 'med' : 'zero';
+    const outClass = item.out_degree >= 5 ? 'high' : item.out_degree >= 2 ? 'med' : 'zero';
+    html += `<tr>
+      <td style="cursor:pointer" onclick="findAndViewArticle('${item.article.replace(/'/g, "\\'")}')">${truncate(item.article, 30)}</td>
+      <td><span class="degree-badge ${inClass}">${item.in_degree}</span></td>
+      <td><span class="degree-badge ${outClass}">${item.out_degree}</span></td>
+    </tr>`;
+  }
+  html += '</tbody></table></div>';
+
+  // Orphans
+  html += '<div class="analytics-card"><h3>Orphan Articles (Isolated)</h3>';
+  if (orphans.length === 0) {
+    html += '<div style="padding:12px;color:var(--success);font-size:13px">No orphan articles found</div>';
+  } else {
+    html += '<table class="citation-table"><thead><tr><th>Article</th><th>In</th><th>Out</th></tr></thead><tbody>';
+    for (const item of orphans) {
+      html += `<tr>
+        <td style="cursor:pointer" onclick="findAndViewArticle('${item.article.replace(/'/g, "\\'")}')">${truncate(item.article, 30)}</td>
+        <td><span class="degree-badge zero">${item.in_degree}</span></td>
+        <td><span class="degree-badge zero">${item.out_degree}</span></td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+  }
+  html += '</div></div>';
+
+  document.getElementById('analytics-citations').innerHTML = html;
+}
+
+function truncate(str, max) {
+  return str.length > max ? str.slice(0, max) + '...' : str;
 }
 
 // ── Utils ────────────────────────────────────────────────
