@@ -684,6 +684,9 @@ body {
     <div class="nav-tab" data-panel="analytics">
       <span class="tab-icon">&#x1F4CA;</span> Analytics
     </div>
+    <div class="nav-tab" data-href="/graph">
+      <span class="tab-icon">&#x1F578;&#xFE0F;</span> Graph
+    </div>
     <div class="nav-tab" data-panel="about">
       <span class="tab-icon">&#x2139;&#xFE0F;</span> About
     </div>
@@ -869,6 +872,11 @@ marked.setOptions({
 // ── Tab Navigation ───────────────────────────────────────
 document.querySelectorAll('.nav-tab').forEach(tab => {
   tab.addEventListener('click', () => {
+    // Link-style tab: navigate to another page instead of switching panels
+    if (tab.dataset.href) {
+      window.location.href = tab.dataset.href;
+      return;
+    }
     document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
     tab.classList.add('active');

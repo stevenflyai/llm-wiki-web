@@ -176,9 +176,10 @@ def make_client(cfg: LLMConfig):
     if cfg.provider == "anthropic":
         try:
             import anthropic
-        except ImportError:
-            print("请安装 anthropic SDK: pip install anthropic")
-            sys.exit(1)
+        except ImportError as exc:
+            raise ImportError(
+                "缺少 anthropic SDK — 请运行 `pip install anthropic`"
+            ) from exc
 
         kwargs: dict = {"api_key": cfg.api_key}
         # 只在自定义 base_url 时才传入，用 rstrip("/") 消除末尾斜杠的差异
@@ -191,9 +192,10 @@ def make_client(cfg: LLMConfig):
     elif cfg.provider == "azure":
         try:
             from openai import AzureOpenAI
-        except ImportError:
-            print("请安装 openai SDK (>=1.0): pip install openai")
-            sys.exit(1)
+        except ImportError as exc:
+            raise ImportError(
+                "缺少 openai SDK (>=1.0) — 请运行 `pip install openai`"
+            ) from exc
 
         client = AzureOpenAI(
             api_key=cfg.api_key,
@@ -207,9 +209,10 @@ def make_client(cfg: LLMConfig):
         # openai / ollama / custom 均使用 openai SDK
         try:
             from openai import OpenAI
-        except ImportError:
-            print("请安装 openai SDK: pip install openai")
-            sys.exit(1)
+        except ImportError as exc:
+            raise ImportError(
+                "缺少 openai SDK — 请运行 `pip install openai`"
+            ) from exc
 
         kwargs: dict = {"api_key": cfg.api_key, "timeout": cfg.timeout}
         # 只在自定义 base_url 时才传入，同样消除末尾斜杠差异

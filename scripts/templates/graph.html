@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Knowledge Graph · LLM Wiki</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<script src="/static/graph/cytoscape.min.js"></script>
+<script src="/static/graph/layout-base.js"></script>
+<script src="/static/graph/cose-base.js"></script>
+<script src="/static/graph/cytoscape-fcose.min.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg-primary: #0a0e1a;
+  --bg-secondary: #0f1525;
+  --bg-tertiary: #151c30;
+  --bg-card: #1a2240;
+  --border: #1e2a4a;
+  --border-active: #00d4ff;
+  --text-primary: #e0e6f0;
+  --text-secondary: #8892a8;
+  --text-muted: #5a6580;
+  --accent: #00d4ff;
+  --accent-dim: #0088aa;
+  --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --color-concepts:   #00d4ff;
+  --color-tools:      #ffb020;
+  --color-research:   #a78bfa;
+  --color-tutorials:  #00e88f;
+  --color-unknown:    #8892a8;
+  --color-ghost:      #5a6580;
+}
+
+html, body { height: 100%; }
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  display: flex; flex-direction: column;
+}
+
+header {
+  display: flex; align-items: center; gap: 16px;
+  padding: 10px 20px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+header h1 {
+  font-size: 15px; font-weight: 600; letter-spacing: 0.02em;
+}
+header h1 .sub { color: var(--text-muted); font-weight: 400; margin-left: 8px; }
+header a {
+  color: var(--text-secondary); text-decoration: none;
+  font-size: 13px; padding: 4px 10px; border-radius: 4px;
+  border: 1px solid var(--border);
+}
+header a:hover { color: var(--accent); border-color: var(--border-active); }
+
+#search {
+  flex: 1;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+#search:focus { outline: none; border-color: var(--border-active); }
+
+.legend { display: flex; gap: 14px; font-size: 12px; }
+.legend label {
+  display: flex; align-items: center; gap: 6px; cursor: pointer;
+  color: var(--text-secondary);
+}
+.legend input { accent-color: var(--accent); }
+.legend .swatch {
+  width: 10px; height: 10px; border-radius: 50%;
+  display: inline-block;
+}
+.swatch.concepts  { background: var(--color-concepts); }
+.swatch.tools     { background: var(--color-tools); }
+.swatch.research  { background: var(--color-research); }
+.swatch.tutorials { background: var(--color-tutorials); }
+.swatch.unknown   { background: var(--color-unknown); }
+.swatch.ghost     { background: var(--color-ghost); border: 1px dashed var(--text-primary); }
+
+main {
+  flex: 1; position: relative; overflow: hidden;
+}
+#cy {
+  position: absolute; inset: 0;
+  background: var(--bg-primary);
+}
+
+#tooltip {
+  position: absolute;
+  background: var(--bg-card);
+  border: 1px solid var(--border-active);
+  padding: 10px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  pointer-events: none;
+  max-width: 320px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  display: none;
+  z-index: 10;
+}
+#tooltip .title { font-weight: 600; color: var(--accent); margin-bottom: 4px; }
+#tooltip .meta { color: var(--text-muted); font-family: var(--font-mono); font-size: 11px; }
+#tooltip .tagline { color: var(--text-primary); margin-top: 6px; line-height: 1.4; }
+
+#empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 12px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  pointer-events: none;
+  background: var(--bg-primary);
+}
+#empty .big { color: var(--text-primary); font-size: 18px; margin-bottom: 4px; font-family: var(--font-sans); font-weight: 600; }
+#empty code {
+  background: var(--bg-tertiary);
+  padding: 4px 8px;
+  border-radius: 3px;
+  color: var(--accent);
+  border: 1px solid var(--border);
+}
+
+#status {
+  position: absolute;
+  bottom: 12px; left: 12px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: rgba(10, 14, 26, 0.7);
+  padding: 4px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}
+
+#zoom-controls {
+  position: absolute;
+  bottom: 12px; right: 12px;
+  display: flex; flex-direction: column; gap: 4px;
+  z-index: 5;
+}
+#zoom-controls button {
+  width: 32px; height: 32px;
+  background: rgba(15, 21, 37, 0.92);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex; align-items: center; justify-content: center;
+  transition: border-color 120ms, color 120ms;
+  padding: 0;
+  line-height: 1;
+}
+#zoom-controls button:hover {
+  border-color: var(--border-active);
+  color: var(--accent);
+}
+#zoom-controls button:active { background: var(--bg-tertiary); }
+#zoom-controls button[title="Fit"] { font-size: 13px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Knowledge Graph <span class="sub">· LLM Wiki</span></h1>
+  <input id="search" type="text" placeholder="搜索节点（按标题过滤）..." autocomplete="off">
+  <div class="legend">
+    <label><input type="checkbox" data-cat="concepts" checked><span class="swatch concepts"></span>concepts</label>
+    <label><input type="checkbox" data-cat="tools" checked><span class="swatch tools"></span>tools</label>
+    <label><input type="checkbox" data-cat="research" checked><span class="swatch research"></span>research</label>
+    <label><input type="checkbox" data-cat="tutorials" checked><span class="swatch tutorials"></span>tutorials</label>
+    <label><input type="checkbox" data-cat="unknown" checked><span class="swatch unknown"></span>unknown</label>
+    <label><input type="checkbox" data-cat="ghost" checked><span class="swatch ghost"></span>ghost</label>
+  </div>
+  <a href="/">← 返回控制台</a>
+</header>
+
+<main>
+  <div id="cy"></div>
+  <div id="tooltip"></div>
+  <div id="status"></div>
+  <div id="zoom-controls">
+    <button type="button" data-zoom="in" title="Zoom in" aria-label="Zoom in">+</button>
+    <button type="button" data-zoom="out" title="Zoom out" aria-label="Zoom out">−</button>
+    <button type="button" data-zoom="fit" title="Fit" aria-label="Fit to screen">⊡</button>
+  </div>
+  <div id="empty" style="display:none;">
+    <div class="big">Graph not yet built</div>
+    <div>Run <code>python scripts/compile.py</code> to generate the knowledge graph.</div>
+    <div style="color:var(--text-muted);">The graph is regenerated at the end of every compile and cached in <code>output/graph/graph.json</code>.</div>
+  </div>
+</main>
+
+<script>
+const CATEGORY_COLOR = {
+  concepts:   '#00d4ff',
+  tools:      '#ffb020',
+  research:   '#a78bfa',
+  tutorials:  '#00e88f',
+  unknown:    '#8892a8',
+  ghost:      '#5a6580',
+};
+
+const el = id => document.getElementById(id);
+
+async function main() {
+  // Register fcose layout extension if available (handles label-aware spacing)
+  if (window.cytoscapeFcose) {
+    cytoscape.use(window.cytoscapeFcose);
+  }
+
+  let data = null;
+  try {
+    const resp = await fetch('/graph/data.json');
+    if (!resp.ok) {
+      showEmpty(); return;
+    }
+    data = await resp.json();
+  } catch (err) {
+    showEmpty(); return;
+  }
+
+  if (!data || !Array.isArray(data.nodes) || data.nodes.length === 0) {
+    showEmpty(); return;
+  }
+
+  renderGraph(data);
+}
+
+function showEmpty() {
+  el('empty').style.display = 'flex';
+  el('status').style.display = 'none';
+}
+
+function renderGraph(data) {
+  // Pre-compute node degree (used to size nodes — Obsidian-style hubs stand out)
+  const degree = {};
+  for (const e of data.edges) {
+    degree[e.source] = (degree[e.source] || 0) + 1;
+    degree[e.target] = (degree[e.target] || 0) + 1;
+  }
+  const maxDegree = Math.max(1, ...Object.values(degree));
+
+  const elements = [];
+  for (const n of data.nodes) {
+    elements.push({
+      data: {
+        id: n.id,
+        label: n.title || n.id,
+        category: n.category || 'unknown',
+        last_updated: n.last_updated || '',
+        tagline: n.tagline || '',
+        ghost: !!n.ghost,
+        orphan: !!n.orphan,
+        degree: degree[n.id] || 0,
+      },
+    });
+  }
+  for (const e of data.edges) {
+    elements.push({
+      data: {
+        id: `${e.source}::${e.target}::${e.kind}`,
+        source: e.source,
+        target: e.target,
+        kind: e.kind,
+      },
+    });
+  }
+
+  const cy = cytoscape({
+    container: el('cy'),
+    elements,
+    wheelSensitivity: 0.2,
+    minZoom: 0.15,
+    maxZoom: 4,
+    style: [
+      {
+        selector: 'node',
+        style: {
+          'background-color': ele => CATEGORY_COLOR[ele.data('category')] || CATEGORY_COLOR.unknown,
+          'label': 'data(label)',
+          'color': '#d8dde6',
+          'font-size': 11,
+          'font-weight': 400,
+          'font-family': 'Inter, -apple-system, sans-serif',
+          'min-zoomed-font-size': 6,
+          'text-valign': 'bottom',
+          'text-halign': 'center',
+          'text-margin-y': 4,
+          'text-wrap': 'wrap',
+          'text-max-width': 110,
+          'line-height': 1.15,
+          'text-outline-width': 3,
+          'text-outline-color': '#0a0e1a',
+          'text-opacity': 0.85,
+          'width':  `mapData(degree, 0, ${maxDegree}, 5, 22)`,
+          'height': `mapData(degree, 0, ${maxDegree}, 5, 22)`,
+          'border-width': 0,
+        },
+      },
+      {
+        selector: 'node.hub',
+        style: {
+          'text-opacity': 1,
+          'font-size': 12,
+          'font-weight': 500,
+          'color': '#eef1f6',
+        },
+      },
+      {
+        selector: 'node[?ghost]',
+        style: {
+          'background-color': CATEGORY_COLOR.ghost,
+          'shape': 'diamond',
+          'opacity': 0.45,
+          'color': '#5a6580',
+        },
+      },
+      {
+        selector: 'node[?orphan]',
+        style: {
+          'border-width': 1,
+          'border-color': 'rgba(255, 68, 102, 0.55)',
+          'border-style': 'solid',
+        },
+      },
+      {
+        selector: 'node.faded',
+        style: { 'opacity': 0.08, 'text-opacity': 0.08 },
+      },
+      {
+        selector: 'node.neighbor',
+        style: { 'text-opacity': 1, 'color': '#d0d6e0' },
+      },
+      {
+        selector: 'node.highlight',
+        style: {
+          'border-width': 2,
+          'border-color': '#00d4ff',
+          'text-opacity': 1,
+          'color': '#00d4ff',
+          'font-weight': 600,
+        },
+      },
+      {
+        selector: 'edge',
+        style: {
+          'width': 0.6,
+          'line-color': '#3a4562',
+          'target-arrow-shape': 'none',
+          'curve-style': 'haystack',
+          'haystack-radius': 0.3,
+          'opacity': 0.55,
+        },
+      },
+      {
+        selector: 'edge[kind = "related"]',
+        style: {
+          'line-style': 'dashed',
+          'line-color': '#6b5fa8',
+          'opacity': 0.5,
+        },
+      },
+      {
+        selector: 'edge.faded',
+        style: { 'opacity': 0.04 },
+      },
+      {
+        selector: 'edge.neighbor',
+        style: { 'opacity': 0.9, 'line-color': '#00d4ff', 'width': 0.9 },
+      },
+    ],
+    layout: window.cytoscapeFcose ? {
+      name: 'fcose',
+      quality: 'proof',
+      randomize: true,
+      animate: false,
+      fit: true,
+      padding: 80,
+      nodeDimensionsIncludeLabels: true,
+      uniformNodeDimensions: false,
+      packComponents: true,
+      nodeRepulsion: 12000,
+      idealEdgeLength: 140,
+      edgeElasticity: 0.45,
+      nestingFactor: 0.1,
+      gravity: 0.18,
+      gravityRangeCompound: 1.5,
+      gravityCompound: 1.0,
+      gravityRange: 3.0,
+      numIter: 3000,
+      tile: true,
+      tilingPaddingVertical: 24,
+      tilingPaddingHorizontal: 24,
+    } : {
+      // Fallback if fcose extension failed to load
+      name: 'cose',
+      idealEdgeLength: 320,
+      nodeRepulsion: 450000,
+      edgeElasticity: 12,
+      gravity: 0.02,
+      numIter: 6000,
+      initialTemp: 400,
+      coolingFactor: 0.975,
+      animate: false,
+      padding: 100,
+      randomize: true,
+      fit: true,
+      nodeOverlap: 180,
+      componentSpacing: 400,
+    },
+  });
+
+  // Mark top-connected nodes as hubs — slightly brighter/larger labels for visual hierarchy.
+  const ranked = cy.nodes().sort((a, b) => b.data('degree') - a.data('degree'));
+  const hubLimit = Math.min(8, Math.max(3, Math.ceil(ranked.length * 0.15)));
+  ranked.slice(0, hubLimit).forEach(n => {
+    if (n.data('degree') >= 2) n.addClass('hub');
+  });
+
+  // Hover: fade non-neighborhood, spotlight the hovered node + 1-hop neighbors (Obsidian-style)
+  const tooltip = el('tooltip');
+  cy.on('mouseover', 'node', evt => {
+    const node = evt.target;
+    const neighborhood = node.closedNeighborhood();
+    cy.elements().addClass('faded');
+    neighborhood.removeClass('faded').addClass('neighbor');
+    node.removeClass('neighbor').addClass('highlight');
+
+    const d = node.data();
+    const parts = [
+      `<div class="title">${escapeHtml(d.label)}${d.ghost ? ' <span style="color:#5a6580;font-weight:400">(ghost)</span>' : ''}</div>`,
+      `<div class="meta">${escapeHtml(d.category)}${d.last_updated ? ' · ' + escapeHtml(d.last_updated) : ''}${d.orphan ? ' · orphan' : ''} · ${d.degree} edges</div>`,
+    ];
+    if (d.tagline) parts.push(`<div class="tagline">${escapeHtml(d.tagline)}</div>`);
+    tooltip.innerHTML = parts.join('');
+    tooltip.style.display = 'block';
+  });
+  cy.on('mousemove', 'node', evt => {
+    tooltip.style.left = (evt.originalEvent.clientX + 12) + 'px';
+    tooltip.style.top = (evt.originalEvent.clientY + 12) + 'px';
+  });
+  cy.on('mouseout', 'node', () => {
+    tooltip.style.display = 'none';
+    // Only clear hover classes when no search is active
+    if (!searchIsActive()) {
+      cy.elements().removeClass('faded neighbor highlight');
+    }
+  });
+
+  // Click → article page (best-effort; real articles only)
+  cy.on('tap', 'node', evt => {
+    const d = evt.target.data();
+    if (d.ghost) return;
+    const parts = d.id.split('/');
+    if (parts.length !== 2) return;
+    const category = parts[0];
+    const name = parts[1].replace(/\.md$/, '');
+    window.location.href = `/#article/${encodeURIComponent(category)}/${encodeURIComponent(name)}`;
+  });
+
+  // Legend toggles
+  document.querySelectorAll('.legend input').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const cat = cb.dataset.cat;
+      const nodes = cat === 'ghost'
+        ? cy.nodes('[?ghost]')
+        : cy.nodes(`[category = "${cat}"][!ghost]`);
+      nodes.style('display', cb.checked ? 'element' : 'none');
+    });
+  });
+
+  // Search filter — highlights matching nodes + their 1-hop neighborhood
+  const searchBox = el('search');
+  function searchIsActive() { return searchBox.value.trim().length > 0; }
+  searchBox.addEventListener('input', () => {
+    const q = searchBox.value.trim().toLowerCase();
+    cy.elements().removeClass('faded neighbor highlight');
+    if (!q) return;
+    const matches = cy.nodes().filter(n => (n.data('label') || '').toLowerCase().includes(q) ||
+                                           (n.data('id')    || '').toLowerCase().includes(q));
+    const neighborhood = matches.closedNeighborhood();
+    cy.elements().addClass('faded');
+    neighborhood.removeClass('faded').addClass('neighbor');
+    matches.addClass('highlight');
+  });
+
+  // Zoom controls (animated, around viewport center)
+  const zoomBy = (factor) => {
+    const z = cy.zoom() * factor;
+    const center = { x: cy.width() / 2, y: cy.height() / 2 };
+    cy.animate({ zoom: { level: z, renderedPosition: center }, duration: 180 });
+  };
+  document.querySelectorAll('#zoom-controls button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const action = btn.dataset.zoom;
+      if (action === 'in')  zoomBy(1.4);
+      else if (action === 'out') zoomBy(1 / 1.4);
+      else if (action === 'fit') cy.animate({ fit: { padding: 60 }, duration: 240 });
+    });
+  });
+
+  const ghostCount = cy.nodes('[?ghost]').length;
+  const orphanCount = cy.nodes('[?orphan]').length;
+  el('status').textContent =
+    `${cy.nodes().length} nodes · ${cy.edges().length} edges · ${ghostCount} ghosts · ${orphanCount} orphans` +
+    (data.generated_at ? ` · built ${data.generated_at}` : '');
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => (
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]
+  ));
+}
+
+main();
+</script>
+</body>
+</html>

@@ -1,5 +1,7 @@
 # LLM Wiki
 
+> 📋 [CHANGELOG](./CHANGELOG.md) — latest: **v0.5** (2026-05-12)
+
 > A personal knowledge base powered by LLMs — inspired by [Andrej Karpathy's LLM Knowledge Base](https://karpathy.ai) pattern.
 
 LLM Wiki treats large language models as **knowledge compilers**: raw documents go in, structured and cross-referenced Markdown wiki articles come out. No vector databases, no embeddings — just files, LLMs, and Obsidian.

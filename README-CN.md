@@ -1,5 +1,7 @@
 # LLM Wiki
 
+> 📋 [更新日志 CHANGELOG](./CHANGELOG.md) — 最新版本：**v0.5**（2026-05-12）
+
 > LLM 驱动的个人知识库 — 灵感来自 [Andrej Karpathy 的 LLM Knowledge Base](https://karpathy.ai) 模式。
 
 LLM Wiki 将大型语言模型作为**知识编译器**：原始文档输入，结构化且交叉引用的 Markdown Wiki 文章输出。不需要向量数据库，不需要 Embedding — 只需文件、LLM 和 Obsidian。

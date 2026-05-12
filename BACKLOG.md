@@ -16,6 +16,7 @@
 当前迭代正在考虑的功能。最多 3-5 项。
 
 - [ ] **示例条目** — 简短描述。触发原因。Priority: high. Added: YYYY-MM-DD.
+- [ ] **Wiki 知识图谱 Web 视图** — 在 FastAPI Web UI 里新增 `/graph` 路由，把 `[[wikilinks]]` + `related_articles` + 类别渲染成交互式 Cytoscape 图，让没装 Obsidian 的访客也能看到知识库的结构。Priority: high. Added: 2026-05-11. → `docs/specs/draft/wiki-graph-view.md`
 
 ---
 

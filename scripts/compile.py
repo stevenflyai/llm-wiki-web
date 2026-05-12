@@ -612,6 +612,33 @@ def prefetch_pdfs(pdf_files: list[Path], backend: Optional[str],
 
 
 # ── 主程序 ────────────────────────────────────────────────────────────────
+def _rebuild_graph_safe(client, client_type, cfg, *, no_enrich: bool) -> None:
+    """Regenerate output/graph/graph.json. Never fail the outer compile."""
+    try:
+        from graph_build import run_graph_build
+
+        def _log_tagline_fail(node_id: str, exc: Exception) -> None:
+            console.print(f"[yellow]tagline 失败 {node_id}: {exc}[/yellow]")
+
+        graph = run_graph_build(
+            WIKI_DIR,
+            WIKI_ROOT / "output" / "graph",
+            client=client,
+            client_type=client_type,
+            cfg=cfg,
+            call_llm=cfg_call_llm,
+            no_enrich=no_enrich,
+            on_tagline_failure=_log_tagline_fail,
+        )
+        append_log(f"graph rebuilt ({len(graph.nodes)} nodes, {len(graph.edges)} edges)")
+        tail = " (no-enrich)" if no_enrich else ""
+        console.print(
+            f"[dim]graph rebuilt: {len(graph.nodes)} nodes, {len(graph.edges)} edges{tail}[/dim]"
+        )
+    except Exception as exc:  # noqa: BLE001 — graph failure must not break compile
+        console.print(f"[red]graph rebuild failed: {exc}[/red]")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="LLM Wiki 编译脚本",
@@ -645,6 +672,10 @@ def main():
     parser.add_argument(
         "--workers", type=int, default=4,
         help="并行提取 PDF 的线程数（默认 4，仅影响文字提取阶段）"
+    )
+    parser.add_argument(
+        "--no-enrich", action="store_true",
+        help="跳过图谱 tagline 的 LLM 生成（CI / 无 key 环境）"
     )
     args = parser.parse_args()
 
@@ -711,6 +742,7 @@ def main():
         console.print(f"\n[green]✓ 没有需要编译的文件[/green]")
         console.print(f"  raw/ 共 {len(all_raw)} 个文件，全部已是最新（基于内容哈希检测）")
         console.print(f"  直接将新 PDF 或文档放入 raw/ 目录，下次运行自动处理。")
+        _rebuild_graph_safe(client, client_type, cfg, no_enrich=args.no_enrich)
         return
 
     # ── 统计并展示 ────────────────────────────────────────────────────────
@@ -780,6 +812,8 @@ def main():
     save_state(state)
     if compiled_count > 0:
         append_log(f"编译 {compiled_count} 篇文章（PDF {len(pdf_list)} 篇，失败 {failed_count} 篇）")
+
+    _rebuild_graph_safe(client, client_type, cfg, no_enrich=args.no_enrich)
 
     # ── 汇总输出 ──────────────────────────────────────────────────────────
     console.rule()

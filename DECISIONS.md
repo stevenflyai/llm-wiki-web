@@ -347,6 +347,38 @@ config.py 的 `_load_dotenv()` 函数（约 20 行）实现了同样功能：跳
 
 ---
 
+## ADR-012: Wiki 知识图谱是基于 `[[wikilinks]]` 的静态衍生物，不做语义推断
+
+**Date:** 2026-05-11
+**Status:** Accepted
+
+**Context:**
+Obsidian 已提供 graph view（ADR-007）。为无 Obsidian 的访客提供公开可浏览的结构视图，
+我们在 FastAPI 应用中新增 `/graph` 路由。需要明确"图从哪里来"，
+避免未来有人提议引入 embedding 推断边或 LLM-ranked 相似度边，
+逐步侵蚀 ADR-001（无向量数据库）的约束。
+
+**Decision:**
+节点来源于 `wiki/**/*.md`。边只有两类：正文中的 `[[wikilinks]]`（kind=`body_link`）
+与 frontmatter `**相关文章**:` 字段里的链接（kind=`related`）。类别作为节点着色，
+不渲染成成对边。Tagline 是节点属性、LLM 生成且按 source_mtime 增量缓存，不是边。
+严禁引入 embedding / 语义相似度 / LLM-ranked 边。
+
+**Consequences:**
+- (+) 规则确定性高，图可 diff、可 lint，不会因 LLM 版本变化而抖动
+- (+) 坚守 ADR-001（无向量化），与知识库"人手写明联系"的定位一致
+- (+) 孤立文章 / 悬空链接直接可见，暴露知识空缺
+- (−) 无法发现未显式链接的潜在关联，需由用户在文章里手动加 `[[link]]`
+- (−) 图谱规模上限受 Cytoscape 默认渲染能力约束（v1 先不处理，超过再议）
+
+**Alternatives considered:**
+- 方案 A：加 embedding + cosine 相似度推断边 — 放弃，违反 ADR-001 且不确定性高
+- 方案 B：把 `raw/` 下原始资料作为叶子节点 — 放弃，偏离"图只看 wiki/"的定位，另立 SPEC
+
+**Related:** ADR-001, ADR-004, ADR-007, SPEC wiki-graph-view
+
+---
+
 <!--
 后续 ADR 在此追加,使用以下模板:
 

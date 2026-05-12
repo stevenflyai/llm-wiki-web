@@ -149,6 +149,26 @@ def check_knowledge_gaps(articles: dict) -> list[str]:
     return gaps
 
 
+def check_content_gaps(articles: dict, min_articles: int = 3) -> list[dict]:
+    """Active knowledge-gap prompts: links to missing articles ranked by inbound mentions.
+
+    Returns items of the form {"topic": str, "mentioned_in": [article_names...], "count": int}
+    sorted by count desc, filtered to count >= min_articles.
+    """
+    mentions: dict[str, list[str]] = {}
+    for article_name, (_path, content) in articles.items():
+        for raw in extract_links(content):
+            target = raw.split("|", 1)[0].split("#", 1)[0].strip()
+            if not target or target in articles or target in ("INDEX", "LOG"):
+                continue
+            mentions.setdefault(target, []).append(article_name)
+    return [
+        {"topic": t, "mentioned_in": sorted(set(m)), "count": len(set(m))}
+        for t, m in sorted(mentions.items(), key=lambda kv: -len(set(kv[1])))
+        if len(set(m)) >= min_articles
+    ]
+
+
 def check_index_coverage(articles: dict) -> list[str]:
     """检查 INDEX.md 中未收录的文章"""
     if not INDEX_FILE.exists():

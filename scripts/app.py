@@ -65,6 +65,15 @@ __author__ = "Steven Lian"
 app = FastAPI(title="LLM Wiki", version=__version__, docs_url="/docs")
 templates = Jinja2Templates(directory=str(SCRIPTS_DIR / "templates"))
 
+# Mount static assets (Cytoscape bundle + any future front-end vendor files)
+from fastapi.staticfiles import StaticFiles
+(SCRIPTS_DIR / "static").mkdir(exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(SCRIPTS_DIR / "static")), name="static")
+
+# Knowledge-graph viewer routes (/graph + /graph/data.json)
+from graph_routes import build_graph_router
+app.include_router(build_graph_router(PROJECT_ROOT, SCRIPTS_DIR / "templates"))
+
 FAVICON_SVG = """<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\"><rect width=\"64\" height=\"64\" rx=\"12\" fill=\"#0a0e1a\"/><path d=\"M16 18h22a10 10 0 0 1 0 20H16z\" fill=\"#00d4ff\"/><path d=\"M18 42h30v6H18z\" fill=\"#a78bfa\"/><path d=\"M24 25h14a3 3 0 0 1 0 6H24z\" fill=\"#0a0e1a\"/></svg>"""
 
 # Global LLM client (lazy init, auto-refresh on .env change)
@@ -278,6 +287,18 @@ async def compile_wiki():
                     files_to_compile = [f for f in files_to_compile if f.suffix.lower() != ".pdf"]
 
                 if not files_to_compile:
+                    # Still refresh the graph artifact in case wiki/ was edited directly
+                    try:
+                        from graph_build import run_graph_build
+                        graph = run_graph_build(
+                            WIKI_DIR, PROJECT_ROOT / "output" / "graph",
+                            client=client, client_type=client_type, cfg=cfg,
+                            call_llm=cfg_call_llm, no_enrich=False,
+                        )
+                        _emit({'type': 'log',
+                               'message': f'Graph rebuilt: {len(graph.nodes)} nodes, {len(graph.edges)} edges'})
+                    except Exception as exc:
+                        _emit({'type': 'log', 'message': f'graph rebuild failed: {exc}'})
                     _emit({'type': 'complete', 'message': 'No new files to compile. All files are up to date.', 'compiled': 0})
                     return
 
@@ -329,10 +350,37 @@ async def compile_wiki():
                 if compiled > 0:
                     append_log(f"Web compile: {compiled} articles (failed: {failed})")
 
+                # ── Regenerate knowledge graph artifact ──
+                try:
+                    from graph_build import run_graph_build
+
+                    def _on_tagline_fail(node_id: str, exc: Exception) -> None:
+                        _emit({'type': 'log', 'message': f'tagline failed {node_id}: {exc}'})
+
+                    graph = run_graph_build(
+                        WIKI_DIR,
+                        PROJECT_ROOT / "output" / "graph",
+                        client=client,
+                        client_type=client_type,
+                        cfg=cfg,
+                        call_llm=cfg_call_llm,
+                        no_enrich=False,
+                        on_tagline_failure=_on_tagline_fail,
+                    )
+                    append_log(f"graph rebuilt ({len(graph.nodes)} nodes, {len(graph.edges)} edges)")
+                    _emit({'type': 'log',
+                           'message': f'Graph rebuilt: {len(graph.nodes)} nodes, {len(graph.edges)} edges'})
+                except Exception as exc:
+                    _emit({'type': 'log', 'message': f'graph rebuild failed: {exc}'})
+
                 _emit({'type': 'complete', 'message': f'Done! Compiled {compiled} article(s), failed {failed}', 'compiled': compiled, 'failed': failed})
 
-            except Exception as e:
-                _emit({'type': 'error', 'message': str(e)})
+            except BaseException as e:
+                # Catch BaseException (not just Exception) so SystemExit/KeyboardInterrupt
+                # from misbehaving callees (e.g. SDKs that sys.exit on ImportError)
+                # still surface as a UI error rather than tearing the SSE stream.
+                msg = str(e) or e.__class__.__name__
+                _emit({'type': 'error', 'message': msg})
             finally:
                 _emit(None)  # sentinel to signal completion
 
